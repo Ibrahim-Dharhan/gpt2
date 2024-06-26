@@ -84,6 +84,20 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
     
+    def forward(self, idx):
+        B, T = idx.shape
+        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer.wpe(pos) # Shape (T, n_embd)
+        tok_emb = self.transformer.wte(idx) # Shape (B,T,n_embd)
+        x = tok_emb + pos_emb
+        for block in self.transformer.h:
+            x = block(x)
+        # Apply final layer norm
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x) # Guess next token, shape is (B,T,vocab_size)
+        return logits
+    
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads pretrained GPT-2 model weights from huggingface"""
