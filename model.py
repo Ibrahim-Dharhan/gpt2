@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
+from torch import optim
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -84,7 +84,7 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
     
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         B, T = idx.shape
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
@@ -96,7 +96,10 @@ class GPT(nn.Module):
         # Apply final layer norm
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # Guess next token, shape is (B,T,vocab_size)
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
     
     @classmethod
     def from_pretrained(cls, model_type):
@@ -136,7 +139,7 @@ class GPT(nn.Module):
         for k in sd_keys_hf:
             if any(k.endswith(w) for w in transposed):
                 # special treatment for the Conv1D weights we need to transpose
-                print(k)
+                # print(k)
                 assert sd_hf[k].shape[::-1] == sd[k].shape
                 with torch.no_grad():
                     sd[k].copy_(sd_hf[k].t())
@@ -149,40 +152,65 @@ class GPT(nn.Module):
         return model
 
 # ---------------------------------------------------------------------------------------------
-model = GPT.from_pretrained('gpt2')
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+#     device = "mps"
+print(f"using device: {device}")
+
+model = GPT(GPTConfig())
+# model.eval()
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+model.to(device)
 import tiktoken
 enc = tiktoken.get_encoding('gpt2')
-tokens = enc.encode("Hey there!")
-num_return_sequences = 5
-max_length = 30
-tokens = torch.tensor(tokens, dtype=torch.long)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-x = tokens
-torch.manual_seed(42)
-while x.shape[1] < max_length:
-    with torch.no_grad():
-        logits = model(x)
-        logits = logits[:,-1,:]
-        probs = F.softmax(logits, dim=-1)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # shape (B, 50)
-        ix = torch.multinomial(topk_probs, 1) # shape (B, 1)
-        # print(f"ix is {ix.shape}")
-        # print(f"tmp is {topk_indices[range(num_return_sequences), ix]}")
-        # print(f"tmp is {topk_indices[range(num_return_sequences), ix].shape}")
-        print(f"ix is {ix}")
-        tmp = topk_indices[[0,1,2,3,4], ix.squeeze()].unsqueeze(dim=1)
-        print(f"tmp is {tmp}")
-        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        print(f"is equal? {torch.equal(tmp, xcol)}")
-        print(f"xcol is {xcol}")
-        # append to the sequence
-        x = torch.cat((x, xcol), dim=1)
-
-# print the generated text
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded)
+# tokens = enc.encode("Hello, I'm a language model,")
+# num_return_sequences = 5
+# max_length = 30
+# tokens = torch.tensor(tokens, dtype=torch.long)
+# tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+# x = tokens.to(device)
+with open('input.txt') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = tokens[:B*T+1]
+print(len(buf))
+x = torch.tensor(buf[:-1], dtype=torch.long).view(B, T)
+y = torch.tensor(buf[1:], dtype=torch.long).view(B, T)
+# logits = model(x)
+epochs = 50
+optimizer = optim.AdamW(model.parameters(), lr=3e-4)
 
 
-print("didn't crash yay!")
+for i in range(epochs):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"step {i} loss: {loss.item()}")
+
+
+
+# while x.shape[1] < max_length:
+#     with torch.no_grad():
+#         logits = model(x)
+#         logits = logits[:,-1,:]
+#         probs = F.softmax(logits, dim=-1)
+#         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # shape (B, 50)
+#         ix = torch.multinomial(topk_probs, 1) # shape (B, 1)
+#         xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+#         # append to the sequence
+#         x = torch.cat((x, xcol), dim=1)
+
+# # print the generated text
+# for i in range(num_return_sequences):
+#     tokens = x[i, :max_length].tolist()
+#     decoded = enc.decode(tokens)
+#     print(">", decoded)
+
+
+# print("didn't crash yay!")
