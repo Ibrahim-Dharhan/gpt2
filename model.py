@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch import optim
+
+# -----------------------------------------------------------------------------
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -60,7 +62,6 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
-
 
 @dataclass
 class GPTConfig:
@@ -151,7 +152,31 @@ class GPT(nn.Module):
 
         return model
 
-# ---------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+import tiktoken
+class DataLoaderLite:
+    def __init__(self, filename, B, T):
+        self.B = B
+        self.T = T
+        enc = tiktoken.get_encoding('gpt2')
+        with open(filename) as f:
+            self.tokens = enc.encode(f.read())
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+        self.cur_iteration = 0
+    
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.cur_iteration:self.cur_iteration+B*T+1]
+        x = torch.tensor(buf[:-1], dtype=torch.long).view(B, T)
+        y = torch.tensor(buf[1:], dtype=torch.long).view(B, T)
+        self.cur_iteration += B * T
+        if self.cur_iteration + (B*T+1) > len(self.tokens):
+            self.cur_iteration = 0
+        return x, y
+
+# -----------------------------------------------------------------------------
+
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
@@ -164,29 +189,13 @@ model = GPT(GPTConfig())
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
 model.to(device)
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-# tokens = enc.encode("Hello, I'm a language model,")
-# num_return_sequences = 5
-# max_length = 30
-# tokens = torch.tensor(tokens, dtype=torch.long)
-# tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-# x = tokens.to(device)
-with open('input.txt') as f:
-    text = f.read()
-text = text[:1000]
-tokens = enc.encode(text)
 B, T = 4, 32
-buf = tokens[:B*T+1]
-print(len(buf))
-x = torch.tensor(buf[:-1], dtype=torch.long).view(B, T)
-y = torch.tensor(buf[1:], dtype=torch.long).view(B, T)
-# logits = model(x)
+data_loader = DataLoaderLite('input.txt', B, T)
 epochs = 50
 optimizer = optim.AdamW(model.parameters(), lr=3e-4)
 
-
 for i in range(epochs):
+    x, y = data_loader.next_batch()
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
